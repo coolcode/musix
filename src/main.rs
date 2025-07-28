@@ -10,14 +10,13 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, SetTitle, disable_raw_mode, enable_raw_mode},
 };
-use rand::prelude::*;
 use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
     layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{BarChart, Block, Borders, Gauge, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, Gauge, List, ListItem, ListState, Paragraph},
 };
 use rodio::{Decoder, OutputStreamBuilder, Sink, Source};
 
@@ -45,35 +44,9 @@ struct Player {
     song_duration: Option<Duration>,
     seek_offset: Duration,
     show_controls_popup: bool,
-    waveform_data: Vec<u64>,
 }
 
 impl Player {
-    fn generate_waveform(&mut self) {
-        if !self.is_playing {
-            self.waveform_data = vec![0; 20];
-            return;
-        }
-        
-        // Generate simplified animated waveform for performance
-        let elapsed = self.get_playback_progress().0;
-        let time_factor = elapsed.as_secs_f32();
-        
-        let mut rng = rand::rng();
-        let base_level = 40;
-        
-        self.waveform_data = (0..20)
-            .map(|i| {
-                // Create wave pattern based on time and position
-                let phase = (i as f32 * 0.3 + time_factor * 2.0).sin();
-                let secondary_wave = (i as f32 * 0.7 + time_factor * 1.5).cos();
-                let noise = rng.random::<f32>() * 15.0;
-                
-                let amplitude = base_level as f32 + phase * 25.0 + secondary_wave * 15.0 + noise;
-                amplitude.max(5.0).min(100.0) as u64
-            })
-            .collect();
-    }
 
     fn update_terminal_title(&self) {
         if self.songs.is_empty() {
@@ -131,7 +104,6 @@ impl Player {
             song_duration: None,
             seek_offset: Duration::from_secs(0),
             show_controls_popup: false,
-            waveform_data: vec![0; 20],
         };
 
         // Set initial terminal title
@@ -230,13 +202,17 @@ impl Player {
         }
 
         let next_index = if self.random_mode {
-            let mut rng = rand::rng();
+            // Simple random selection using timestamp
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos() as usize;
             let mut indices: Vec<usize> = (0..self.songs.len()).collect();
-            indices.remove(self.current_index);
+            indices.retain(|&i| i != self.current_index);
             if indices.is_empty() {
                 self.current_index
             } else {
-                *indices.choose(&mut rng).unwrap()
+                indices[timestamp % indices.len()]
             }
         } else if self.current_index + 1 >= self.songs.len() {
             if self.loop_mode { 0 } else { self.current_index }
@@ -253,13 +229,17 @@ impl Player {
         }
 
         let prev_index = if self.random_mode {
-            let mut rng = rand::rng();
+            // Simple random selection using timestamp
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos() as usize;
             let mut indices: Vec<usize> = (0..self.songs.len()).collect();
-            indices.remove(self.current_index);
+            indices.retain(|&i| i != self.current_index);
             if indices.is_empty() {
                 self.current_index
             } else {
-                *indices.choose_mut(&mut rng).unwrap()
+                indices[timestamp % indices.len()]
             }
         } else if self.current_index == 0 {
             if self.loop_mode { self.songs.len() - 1 } else { 0 }
@@ -429,7 +409,6 @@ fn ui(f: &mut Frame, player: &Player) {
         .constraints([
             Constraint::Length(3), // Title
             Constraint::Min(8),    // Song list
-            Constraint::Length(8), // Waveform
             Constraint::Length(3), // Progress bar
             Constraint::Length(3), // Status
         ])
@@ -476,34 +455,6 @@ fn ui(f: &mut Frame, player: &Player) {
 
     f.render_stateful_widget(songs_list, chunks[1], &mut player.list_state.clone());
 
-    // Waveform visualization
-    let waveform_data: Vec<(&str, u64)> = player.waveform_data
-        .iter()
-        .enumerate()
-        .map(|(i, &value)| {
-            let label = if i % 4 == 0 { 
-                format!("{}", i + 1) 
-            } else { 
-                " ".to_string() 
-            };
-            (Box::leak(label.into_boxed_str()) as &str, value)
-        })
-        .collect();
-
-    let waveform_chart = BarChart::default()
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Waveform")
-                .border_style(Style::default().fg(PRIMARY_COLOR)),
-        )
-        .data(&waveform_data)
-        .bar_width(3)
-        .bar_gap(1)
-        .bar_style(Style::default().fg(HIGHLIGHT_COLOR))
-        .value_style(Style::default().fg(Color::White).add_modifier(Modifier::BOLD));
-    f.render_widget(waveform_chart, chunks[2]);
-
     // Progress bar
     let (elapsed, total) = player.get_playback_progress();
     let progress_ratio = if let Some(duration) = total {
@@ -534,7 +485,7 @@ fn ui(f: &mut Frame, player: &Player) {
         .gauge_style(Style::default().fg(PRIMARY_COLOR))
         .ratio(progress_ratio)
         .label(progress_label);
-    f.render_widget(progress_bar, chunks[3]);
+    f.render_widget(progress_bar, chunks[2]);
 
     // Status
     let mode_text = if player.random_mode { "RANDOM" } else { "NORMAL" };
@@ -551,7 +502,7 @@ fn ui(f: &mut Frame, player: &Player) {
             .title("Status")
             .border_style(Style::default().fg(PRIMARY_COLOR)),
     );
-    f.render_widget(status, chunks[4]);
+    f.render_widget(status, chunks[3]);
 
     // Controls popup
     if player.show_controls_popup {
@@ -689,9 +640,6 @@ fn run_player() -> Result<(), Box<dyn std::error::Error>> {
 
 fn main_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, player: &mut Player) -> Result<(), Box<dyn std::error::Error>> {
     loop {
-        // Update waveform data for real-time visualization
-        player.generate_waveform();
-        
         terminal.draw(|f| ui(f, player))?;
 
         if let Ok(true) = event::poll(Duration::from_millis(100)) {
