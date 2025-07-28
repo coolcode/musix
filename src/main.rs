@@ -120,10 +120,17 @@ impl Player {
             return Ok(());
         }
 
+        // Check if this is a new song before updating current_index
+        let is_new_song = index != self.current_index;
+        
         self.current_index = index;
         self.selected_index = index;
         self.list_state.select(Some(self.selected_index));
-        self.seek_offset = Duration::from_secs(0);
+        
+        // Only reset seek_offset if this is a new song
+        if is_new_song {
+            self.seek_offset = Duration::from_secs(0);
+        }
 
         if let Some(ref sink) = self.sink {
             let song = &self.songs[index];
@@ -310,7 +317,7 @@ impl Player {
 
     fn seek(&mut self, offset_seconds: i32) {
         if !self.songs.is_empty() && self.is_playing {
-            if let Some(ref sink) = self.sink {
+            if let Some(ref _sink) = self.sink {
                 // Get current actual position (including elapsed time since playback start)
                 let current_position = if let Some(start_time) = self.playback_start {
                     self.seek_offset + start_time.elapsed()
@@ -327,24 +334,29 @@ impl Player {
                         Duration::from_secs(0)
                     }
                 } else {
-                    // Seek forward
-                    current_position + seek_duration
+                    // Seek forward - also check against song duration if available
+                    let max_duration = self.song_duration.unwrap_or(Duration::from_secs(u64::MAX));
+                    let proposed_position = current_position + seek_duration;
+                    if proposed_position < max_duration {
+                        proposed_position
+                    } else {
+                        max_duration.saturating_sub(Duration::from_secs(1))
+                    }
                 };
 
-                // Try to seek using rodio's try_seek method
-                let sink = sink.lock().unwrap();
-                match sink.try_seek(new_position) {
-                    Ok(()) => {
-                        // Seeking succeeded, update our tracking variables
-                        self.seek_offset = new_position;
-                        self.playback_start = Some(Instant::now());
-                    }
-                    Err(_) => {
-                        // Seeking failed, fall back to restarting from new position
-                        drop(sink);
-                        self.seek_offset = new_position;
-                        let _ = self.play_song(self.current_index);
-                    }
+                // Since try_seek often fails in rodio 0.21, we'll use a more reliable approach
+                // by restarting playback from the desired position
+                self.seek_offset = new_position;
+                
+                // Store the playing state to maintain it after seek
+                let was_playing = self.is_playing;
+                
+                // Restart playback from the new position
+                if let Err(e) = self.play_song(self.current_index) {
+                    eprintln!("Warning: Failed to seek: {e}");
+                } else if !was_playing {
+                    // If we weren't playing before, pause after seeking
+                    self.pause_playback();
                 }
             }
         }
