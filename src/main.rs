@@ -47,7 +47,6 @@ struct Player {
 }
 
 impl Player {
-
     fn update_terminal_title(&self) {
         if self.songs.is_empty() {
             return;
@@ -125,7 +124,7 @@ impl Player {
         self.selected_index = index;
         self.list_state.select(Some(self.selected_index));
         self.seek_offset = Duration::from_secs(0);
-        
+
         if let Some(ref sink) = self.sink {
             let song = &self.songs[index];
             match std::fs::File::open(&song.path) {
@@ -468,12 +467,13 @@ fn ui(f: &mut Frame, player: &Player) {
     };
 
     let progress_label_text = if let Some(duration) = total {
-        format!("{}/{}", Player::format_duration(elapsed), Player::format_duration(duration))
+        format!(" {}/{} ", Player::format_duration(elapsed), Player::format_duration(duration))
     } else {
-        Player::format_duration(elapsed)
+        format!(" {} ", Player::format_duration(elapsed))
     };
 
-    let progress_label = Span::styled(progress_label_text, Style::default().fg(Color::White));
+    let progress_bar_style = Style::default().fg(PRIMARY_COLOR).bg(Color::default());
+    let progress_label = Span::styled(progress_label_text, progress_bar_style);
 
     let progress_bar = Gauge::default()
         .block(
@@ -482,7 +482,7 @@ fn ui(f: &mut Frame, player: &Player) {
                 .title("Progress")
                 .border_style(Style::default().fg(PRIMARY_COLOR)),
         )
-        .gauge_style(Style::default().fg(PRIMARY_COLOR))
+        .gauge_style(progress_bar_style)
         .ratio(progress_ratio)
         .label(progress_label);
     f.render_widget(progress_bar, chunks[2]);
