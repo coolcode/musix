@@ -317,7 +317,7 @@ impl Player {
 
     fn seek(&mut self, offset_seconds: i32) {
         if !self.songs.is_empty() && self.is_playing {
-            if let Some(ref _sink) = self.sink {
+            if let Some(ref sink_arc) = self.sink {
                 // Get current actual position (including elapsed time since playback start)
                 let current_position = if let Some(start_time) = self.playback_start {
                     self.seek_offset + start_time.elapsed()
@@ -344,19 +344,19 @@ impl Player {
                     }
                 };
 
-                // Since try_seek often fails in rodio 0.21, we'll use a more reliable approach
-                // by restarting playback from the desired position
-                self.seek_offset = new_position;
-                
-                // Store the playing state to maintain it after seek
-                let was_playing = self.is_playing;
-                
-                // Restart playback from the new position
-                if let Err(e) = self.play_song(self.current_index) {
-                    eprintln!("Warning: Failed to seek: {e}");
-                } else if !was_playing {
-                    // If we weren't playing before, pause after seeking
-                    self.pause_playback();
+                // Use rodio's try_seek for fast seeking
+                let sink = sink_arc.lock().unwrap();
+                match sink.try_seek(new_position) {
+                    Ok(()) => {
+                        // Seeking succeeded, update our tracking variables
+                        self.seek_offset = new_position;
+                        self.playback_start = Some(Instant::now());
+                    }
+                    Err(_) => {
+                        // try_seek failed, which means this format doesn't support seeking
+                        // Just ignore the seek request rather than doing expensive restart
+                        eprintln!("Seeking not supported for this audio format");
+                    }
                 }
             }
         }
