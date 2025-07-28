@@ -1,4 +1,5 @@
 /target
 .claude
 *.mp3
-docs
+docs.DS_Store
+data/.DS_Store

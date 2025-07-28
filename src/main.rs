@@ -17,9 +17,9 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Gauge, List, ListItem, ListState, Paragraph},
+    widgets::{BarChart, Block, Borders, Gauge, List, ListItem, ListState, Paragraph},
 };
-use rodio::{Decoder, OutputStream, Sink, Source};
+use rodio::{Decoder, OutputStreamBuilder, Sink, Source};
 
 #[derive(Clone)]
 struct Song {
@@ -45,9 +45,36 @@ struct Player {
     song_duration: Option<Duration>,
     seek_offset: Duration,
     show_controls_popup: bool,
+    waveform_data: Vec<u64>,
 }
 
 impl Player {
+    fn generate_waveform(&mut self) {
+        if !self.is_playing {
+            self.waveform_data = vec![0; 20];
+            return;
+        }
+        
+        // Generate simplified animated waveform for performance
+        let elapsed = self.get_playback_progress().0;
+        let time_factor = elapsed.as_secs_f32();
+        
+        let mut rng = rand::rng();
+        let base_level = 40;
+        
+        self.waveform_data = (0..20)
+            .map(|i| {
+                // Create wave pattern based on time and position
+                let phase = (i as f32 * 0.3 + time_factor * 2.0).sin();
+                let secondary_wave = (i as f32 * 0.7 + time_factor * 1.5).cos();
+                let noise = rng.random::<f32>() * 15.0;
+                
+                let amplitude = base_level as f32 + phase * 25.0 + secondary_wave * 15.0 + noise;
+                amplitude.max(5.0).min(100.0) as u64
+            })
+            .collect();
+    }
+
     fn update_terminal_title(&self) {
         if self.songs.is_empty() {
             return;
@@ -70,23 +97,18 @@ impl Player {
         let mut list_state = ListState::default();
         list_state.select(Some(0));
 
-        // Initialize audio system with Rodio 0.20 API
-        let (stream, stream_handle, sink) = match OutputStream::try_default() {
-            Ok((stream, stream_handle)) => match Sink::try_new(&stream_handle) {
-                Ok(sink) => (
-                    Some(Box::new(stream) as Box<dyn std::any::Any>),
+        // Initialize audio system with Rodio 0.21 API
+        let (stream, stream_handle, sink) = match OutputStreamBuilder::open_default_stream() {
+            Ok(mut stream_handle) => {
+                // Disable logging on drop to prevent CLI/UI interference
+                stream_handle.log_on_drop(false);
+                let sink = Sink::connect_new(stream_handle.mixer());
+                (
+                    None, // No separate stream object in 0.21
                     Some(Box::new(stream_handle) as Box<dyn std::any::Any>),
                     Some(Arc::new(Mutex::new(sink))),
-                ),
-                Err(e) => {
-                    eprintln!("Warning: Could not create audio sink: {e}");
-                    (
-                        Some(Box::new(stream) as Box<dyn std::any::Any>),
-                        Some(Box::new(stream_handle) as Box<dyn std::any::Any>),
-                        None,
-                    )
-                }
-            },
+                )
+            }
             Err(e) => {
                 eprintln!("Warning: Could not initialize audio output: {e}");
                 eprintln!("The application will continue but audio playback may not work.");
@@ -109,6 +131,7 @@ impl Player {
             song_duration: None,
             seek_offset: Duration::from_secs(0),
             show_controls_popup: false,
+            waveform_data: vec![0; 20],
         };
 
         // Set initial terminal title
@@ -130,6 +153,7 @@ impl Player {
         self.selected_index = index;
         self.list_state.select(Some(self.selected_index));
         self.seek_offset = Duration::from_secs(0);
+        
         if let Some(ref sink) = self.sink {
             let song = &self.songs[index];
             match std::fs::File::open(&song.path) {
@@ -157,12 +181,12 @@ impl Player {
                             self.update_terminal_title();
                         }
                         Err(e) => {
-                            eprintln!("Warning: Could not decode audio file '{}': {e}", song.name);
+                            eprintln!("Warning: Could not decode audio file '{}': {e}", self.songs[index].name);
                         }
                     }
                 }
                 Err(e) => {
-                    eprintln!("Warning: Could not open audio file '{}': {e}", song.name);
+                    eprintln!("Warning: Could not open audio file '{}': {e}", self.songs[index].name);
                 }
             }
         } else {
@@ -405,6 +429,7 @@ fn ui(f: &mut Frame, player: &Player) {
         .constraints([
             Constraint::Length(3), // Title
             Constraint::Min(8),    // Song list
+            Constraint::Length(8), // Waveform
             Constraint::Length(3), // Progress bar
             Constraint::Length(3), // Status
         ])
@@ -451,6 +476,34 @@ fn ui(f: &mut Frame, player: &Player) {
 
     f.render_stateful_widget(songs_list, chunks[1], &mut player.list_state.clone());
 
+    // Waveform visualization
+    let waveform_data: Vec<(&str, u64)> = player.waveform_data
+        .iter()
+        .enumerate()
+        .map(|(i, &value)| {
+            let label = if i % 4 == 0 { 
+                format!("{}", i + 1) 
+            } else { 
+                " ".to_string() 
+            };
+            (Box::leak(label.into_boxed_str()) as &str, value)
+        })
+        .collect();
+
+    let waveform_chart = BarChart::default()
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Waveform")
+                .border_style(Style::default().fg(PRIMARY_COLOR)),
+        )
+        .data(&waveform_data)
+        .bar_width(3)
+        .bar_gap(1)
+        .bar_style(Style::default().fg(HIGHLIGHT_COLOR))
+        .value_style(Style::default().fg(Color::White).add_modifier(Modifier::BOLD));
+    f.render_widget(waveform_chart, chunks[2]);
+
     // Progress bar
     let (elapsed, total) = player.get_playback_progress();
     let progress_ratio = if let Some(duration) = total {
@@ -481,7 +534,7 @@ fn ui(f: &mut Frame, player: &Player) {
         .gauge_style(Style::default().fg(PRIMARY_COLOR))
         .ratio(progress_ratio)
         .label(progress_label);
-    f.render_widget(progress_bar, chunks[2]);
+    f.render_widget(progress_bar, chunks[3]);
 
     // Status
     let mode_text = if player.random_mode { "RANDOM" } else { "NORMAL" };
@@ -498,7 +551,7 @@ fn ui(f: &mut Frame, player: &Player) {
             .title("Status")
             .border_style(Style::default().fg(PRIMARY_COLOR)),
     );
-    f.render_widget(status, chunks[3]);
+    f.render_widget(status, chunks[4]);
 
     // Controls popup
     if player.show_controls_popup {
@@ -636,6 +689,9 @@ fn run_player() -> Result<(), Box<dyn std::error::Error>> {
 
 fn main_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, player: &mut Player) -> Result<(), Box<dyn std::error::Error>> {
     loop {
+        // Update waveform data for real-time visualization
+        player.generate_waveform();
+        
         terminal.draw(|f| ui(f, player))?;
 
         if let Ok(true) = event::poll(Duration::from_millis(100)) {

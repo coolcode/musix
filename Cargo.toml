@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-rodio = "0.20"
+rodio = "0.21"
 crossterm = "0.29"
 ratatui = "0.29"
 rand = "0.9"
