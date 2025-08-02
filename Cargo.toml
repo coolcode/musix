@@ -7,3 +7,4 @@ edition = "2024"
 rodio = "0.20"
 crossterm = "0.29"
 ratatui = "0.29"
+symphonia = { version = "0.5", features = ["aac", "mp3", "isomp4"] }

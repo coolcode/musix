@@ -1,5 +1,9 @@
 /target
 .claude
 *.mp3
+*.opus
+*.aac
+*.flac
+*.wav
 docs
 .DS_Store
